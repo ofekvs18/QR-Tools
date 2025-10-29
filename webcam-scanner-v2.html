@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Webcam QR Scanner</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            margin: 0;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #4ec9b0;
+            border-bottom: 2px solid #4ec9b0;
+            padding-bottom: 10px;
+        }
+        #video {
+            width: 100%;
+            max-width: 640px;
+            border: 3px solid #569cd6;
+            border-radius: 8px;
+            display: block;
+            margin: 20px 0;
+            background: #000;
+        }
+        #video.scanning {
+            border-color: #4ec9b0;
+            box-shadow: 0 0 20px rgba(78, 201, 176, 0.5);
+        }
+        .scanner-info {
+            background: #252526;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+            font-size: 14px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            align-items: center;
+        }
+        .scanner-info .scanning-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #4ec9b0;
+            margin-right: 8px;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.3); }
+        }
+        .status {
+            background: #252526;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            border-left: 4px solid #569cd6;
+            font-size: 16px;
+        }
+        .success {
+            border-left-color: #4ec9b0;
+            background: #1a3a2e;
+        }
+        .error {
+            border-left-color: #f48771;
+            background: #3a1a1a;
+        }
+        .progress-bar {
+            background: #252526;
+            height: 30px;
+            border-radius: 5px;
+            overflow: hidden;
+            margin: 20px 0;
+            border: 1px solid #569cd6;
+        }
+        .progress-fill {
+            background: linear-gradient(90deg, #4ec9b0, #569cd6);
+            height: 100%;
+            transition: width 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+        }
+        .chunk-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+            gap: 5px;
+            margin: 20px 0;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .chunk-item {
+            background: #252526;
+            padding: 8px;
+            text-align: center;
+            border-radius: 4px;
+            font-size: 12px;
+            border: 1px solid #3e3e42;
+        }
+        .chunk-item.scanned {
+            background: #1a3a2e;
+            border-color: #4ec9b0;
+            color: #4ec9b0;
+        }
+        .chunk-item.missing {
+            background: #3a1a1a;
+            border-color: #f48771;
+            color: #f48771;
+        }
+        button {
+            background: #569cd6;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 5px;
+        }
+        button:hover {
+            background: #4ec9b0;
+        }
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        .hidden {
+            display: none;
+        }
+        .stats {
+            text-align: right;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📷 Webcam QR Code Scanner</h1>
+
+        <div>
+            <button id="startBtn">Start Camera</button>
+            <button id="downloadBtn" class="hidden">Download All Text Files (.zip)</button>
+        </div>
+
+        <video id="video" autoplay playsinline></video>
+        <canvas id="canvas" style="display:none;"></canvas>
+
+        <div id="scannerInfo" class="scanner-info hidden">
+            <div>
+                <span class="scanning-indicator"></span>
+                <strong>ACTIVELY SCANNING...</strong>
+            </div>
+            <div class="stats">
+                <div><strong id="scanCount">Scans: 0</strong></div>
+                <div><strong id="fpsCounter">FPS: 0</strong></div>
+                <div id="lastScanTime">Last scan: Never</div>
+            </div>
+        </div>
+
+        <div id="status" class="status">
+            Click "Start Camera" to begin scanning QR codes
+        </div>
+
+        <div id="progressSection" class="hidden">
+            <h2>Progress</h2>
+            <div class="progress-bar">
+                <div id="progressFill" class="progress-fill" style="width: 0%">0%</div>
+            </div>
+            <div id="progressText"></div>
+            <h3>Chunks Status</h3>
+            <div id="chunkList" class="chunk-list"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    <script>
+        const DELIMITER = '|~|';
+        const scannedChunks = new Map();
+        let expectedFileName = null;
+        let expectedTotalChunks = 0;
+        let isScanning = false;
+        let lastScannedChunk = -1;
+        let lastScanTime = 0;
+        const SCAN_COOLDOWN = 1000;
+
+        // Performance tracking
+        let scanAttempts = 0;
+        let lastFrameTime = Date.now();
+        let frameCount = 0;
+
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const statusDiv = document.getElementById('status');
+        const startBtn = document.getElementById('startBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const progressSection = document.getElementById('progressSection');
+        const scannerInfo = document.getElementById('scannerInfo');
+        const scanCountEl = document.getElementById('scanCount');
+        const fpsCounterEl = document.getElementById('fpsCounter');
+        const lastScanTimeEl = document.getElementById('lastScanTime');
+
+        function updateStatus(message, type = 'info') {
+            statusDiv.textContent = message;
+            statusDiv.className = 'status';
+            if (type === 'success') statusDiv.classList.add('success');
+            if (type === 'error') statusDiv.classList.add('error');
+            console.log('[STATUS]', type, message);
+        }
+
+        function parseQRData(qrText) {
+            const parts = qrText.split(DELIMITER);
+            if (parts.length === 4) {
+                return {
+                    fileName: parts[0],
+                    chunkIndex: parseInt(parts[1], 10),
+                    totalChunks: parseInt(parts[2], 10),
+                    data: parts[3],
+                    raw: qrText
+                };
+            }
+            return null;
+        }
+
+        function updateProgress() {
+            if (expectedTotalChunks === 0) return;
+
+            const percentage = ((scannedChunks.size / expectedTotalChunks) * 100).toFixed(1);
+            const progressFill = document.getElementById('progressFill');
+            const progressText = document.getElementById('progressText');
+            const chunkList = document.getElementById('chunkList');
+
+            progressFill.style.width = percentage + '%';
+            progressFill.textContent = percentage + '%';
+
+            const missing = [];
+            for (let i = 0; i < expectedTotalChunks; i++) {
+                if (!scannedChunks.has(i)) missing.push(i);
+            }
+
+            progressText.innerHTML = `
+                <strong>File:</strong> ${expectedFileName}<br>
+                <strong>Scanned:</strong> ${scannedChunks.size} / ${expectedTotalChunks}<br>
+                <strong>Missing:</strong> ${missing.length} chunks
+            `;
+
+            // Update chunk grid
+            chunkList.innerHTML = '';
+            for (let i = 0; i < expectedTotalChunks; i++) {
+                const div = document.createElement('div');
+                div.className = 'chunk-item ' + (scannedChunks.has(i) ? 'scanned' : 'missing');
+                div.textContent = i;
+                div.title = scannedChunks.has(i) ? 'Scanned ✓' : 'Missing';
+                chunkList.appendChild(div);
+            }
+
+            if (scannedChunks.size === expectedTotalChunks) {
+                updateStatus('🎉 ALL CHUNKS SCANNED! Click below to download.', 'success');
+                downloadBtn.classList.remove('hidden');
+            }
+
+            progressSection.classList.remove('hidden');
+        }
+
+        async function scanQRCode() {
+            if (!isScanning) return;
+
+            // Update FPS counter
+            frameCount++;
+            const now = Date.now();
+            if (now - lastFrameTime >= 1000) {
+                fpsCounterEl.textContent = `FPS: ${frameCount}`;
+                frameCount = 0;
+                lastFrameTime = now;
+            }
+
+            // Update scan attempts
+            scanAttempts++;
+            scanCountEl.textContent = `Scans: ${scanAttempts}`;
+
+            if (video.videoWidth === 0 || video.videoHeight === 0) {
+                requestAnimationFrame(scanQRCode);
+                return;
+            }
+
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const code = jsQR(imageData.data, imageData.width, imageData.height, {
+                inversionAttempts: "attemptBoth",
+            });
+
+            if (code) {
+                console.log('[QR DETECTED]', code.data.substring(0, 50) + '...');
+
+                // Flash the video border
+                video.classList.add('scanning');
+                setTimeout(() => video.classList.remove('scanning'), 200);
+
+                const qrData = parseQRData(code.data);
+
+                if (qrData) {
+                    console.log('[QR PARSED]', qrData.fileName, 'chunk', qrData.chunkIndex, '/', qrData.totalChunks);
+
+                    // Avoid rescanning same chunk too quickly
+                    if (qrData.chunkIndex === lastScannedChunk && (now - lastScanTime) < SCAN_COOLDOWN) {
+                        requestAnimationFrame(scanQRCode);
+                        return;
+                    }
+
+                    if (!scannedChunks.has(qrData.chunkIndex)) {
+                        scannedChunks.set(qrData.chunkIndex, qrData.raw);
+
+                        if (!expectedFileName) {
+                            expectedFileName = qrData.fileName;
+                            expectedTotalChunks = qrData.totalChunks;
+                        }
+
+                        updateStatus(`✓ SAVED: Chunk ${qrData.chunkIndex} / ${qrData.totalChunks}`, 'success');
+                        updateProgress();
+
+                        lastScannedChunk = qrData.chunkIndex;
+                        lastScanTime = now;
+                        lastScanTimeEl.textContent = `Last scan: ${new Date().toLocaleTimeString()}`;
+
+                        // Beep sound
+                        try {
+                            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                            const oscillator = audioContext.createOscillator();
+                            oscillator.connect(audioContext.destination);
+                            oscillator.frequency.value = 800;
+                            oscillator.start();
+                            oscillator.stop(audioContext.currentTime + 0.1);
+                        } catch (e) {
+                            console.log('Audio not available');
+                        }
+                    } else {
+                        updateStatus(`⚠️  Already scanned: Chunk ${qrData.chunkIndex} (duplicate)`, 'info');
+                        lastScanTimeEl.textContent = `Last scan: ${new Date().toLocaleTimeString()} (duplicate)`;
+                    }
+                } else {
+                    console.log('[QR FORMAT ERROR] Not in expected format');
+                    updateStatus(`📷 QR detected but format not recognized`, 'info');
+                }
+            }
+
+            requestAnimationFrame(scanQRCode);
+        }
+
+        startBtn.addEventListener('click', async () => {
+            console.log('[START] Requesting camera access...');
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: 'environment',
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    }
+                });
+
+                console.log('[START] Camera access granted');
+                video.srcObject = stream;
+
+                // Wait for video to be ready
+                video.onloadedmetadata = () => {
+                    console.log('[START] Video ready:', video.videoWidth, 'x', video.videoHeight);
+                    isScanning = true;
+                    updateStatus('📷 Camera active. Point at QR codes...', 'success');
+                    startBtn.disabled = true;
+                    scannerInfo.classList.remove('hidden');
+                    scanQRCode();
+                };
+            } catch (err) {
+                console.error('[ERROR]', err);
+                updateStatus('❌ Error accessing camera: ' + err.message, 'error');
+            }
+        });
+
+        downloadBtn.addEventListener('click', async () => {
+            console.log('[DOWNLOAD] Creating ZIP...');
+            const zip = new JSZip();
+
+            scannedChunks.forEach((data, index) => {
+                const fileName = `chunk_${String(index).padStart(4, '0')}.txt`;
+                zip.file(fileName, data);
+            });
+
+            const blob = await zip.generateAsync({ type: 'blob' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'qr_text_data.zip';
+            a.click();
+            URL.revokeObjectURL(url);
+
+            updateStatus('📦 Downloaded qr_text_data.zip - Extract and run: node text-to-file.js', 'success');
+            console.log('[DOWNLOAD] Complete');
+        });
+
+        // Initial console message
+        console.log('[READY] Open the browser console (F12) to see debugging info');
+        console.log('[READY] Click "Start Camera" to begin');
+    </script>
+</body>
+</html>

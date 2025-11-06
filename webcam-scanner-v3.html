@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Webcam QR Scanner</title>
+    <title>Webcam QR Scanner (Server Mode)</title>
     <style>
         body {
             font-family: 'Courier New', monospace;
@@ -152,7 +152,7 @@
 </head>
 <body>
     <div class="container">
-        <h1>📷 Webcam QR Code Scanner</h1>
+        <h1>📷 Webcam QR Code Scanner (Server Mode - Saves to Disk)</h1>
 
         <div>
             <button id="startBtn">Start Camera</button>
@@ -208,8 +208,7 @@
         let lastScannedChunk = -1;
         let lastScanTime = 0;
         const SCAN_COOLDOWN = 1000;
-        const AUTO_SAVE_INTERVAL = 100; // Auto-save every 100 chunks
-        let lastAutoSaveCount = 0;
+        const SERVER_URL = 'http://localhost:3000';
 
         // Performance tracking
         let scanAttempts = 0;
@@ -251,26 +250,30 @@
             return null;
         }
 
-        async function autoSaveChunks() {
-            if (scannedChunks.size - lastAutoSaveCount >= AUTO_SAVE_INTERVAL) {
-                console.log(`[AUTO-SAVE] Saving backup (${scannedChunks.size} chunks)...`);
-
-                const zip = new JSZip();
-                scannedChunks.forEach((data, index) => {
-                    const fileName = `chunk_${String(index).padStart(4, '0')}.txt`;
-                    zip.file(fileName, data);
+        async function saveChunkToServer(chunkIndex, content, fileName) {
+            try {
+                const response = await fetch(`${SERVER_URL}/save-chunk`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        chunkIndex,
+                        content,
+                        fileName
+                    })
                 });
 
-                const blob = await zip.generateAsync({ type: 'blob' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `qr_backup_${scannedChunks.size}_chunks_${Date.now()}.zip`;
-                a.click();
-                URL.revokeObjectURL(url);
-
-                lastAutoSaveCount = scannedChunks.size;
-                console.log('[AUTO-SAVE] Backup saved');
+                const result = await response.json();
+                if (!result.success) {
+                    console.error('[SERVER ERROR]', result.error);
+                    return false;
+                }
+                return true;
+            } catch (error) {
+                console.error('[SERVER ERROR] Could not save to server:', error.message);
+                updateStatus(`⚠️ Server not running! Start: node qr-server.js`, 'error');
+                return false;
             }
         }
 
@@ -311,9 +314,6 @@
                 downloadFileBtn.classList.remove('hidden');
                 downloadBtn.classList.remove('hidden');
             }
-
-            // Auto-save check
-            autoSaveChunks();
 
             progressSection.classList.remove('hidden');
         }
@@ -390,6 +390,10 @@
                     }
 
                     if (!scannedChunks.has(qrData.chunkIndex)) {
+                        // Save to server (async, non-blocking)
+                        saveChunkToServer(qrData.chunkIndex, qrData.raw, qrData.fileName);
+
+                        // Keep in memory for progress tracking
                         scannedChunks.set(qrData.chunkIndex, qrData.raw);
 
                         if (!expectedFileName) {
@@ -403,7 +407,7 @@
                             currentFileInfo.classList.remove('hidden');
                         }
 
-                        updateStatus(`✓ SAVED: Chunk ${qrData.chunkIndex} / ${qrData.totalChunks}`, 'success');
+                        updateStatus(`✓ SAVED TO DISK: Chunk ${qrData.chunkIndex} / ${qrData.totalChunks}`, 'success');
                         updateProgress();
 
                         lastScannedChunk = qrData.chunkIndex;

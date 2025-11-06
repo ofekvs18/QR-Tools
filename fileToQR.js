@@ -3,7 +3,7 @@ const QRCode = require('qrcode');
 const path = require('path');
 
 // Configuration - SMALLER chunks for better reliability
-const CHUNK_SIZE = 1500; // Reduced from 2600 for more reliable QR codes
+const CHUNK_SIZE = 800; // Reduced from 2600 for more reliable QR codes
 const OUTPUT_DIR = './qr_codes';
 const DELIMITER = '|~|';
 

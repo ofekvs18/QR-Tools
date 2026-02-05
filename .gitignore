@@ -8,6 +8,7 @@ yarn-error.log*
 reconstructed_files/
 qr_codes/
 qr_text_data/
+qr_chunks/
 
 # ZIP files
 *.zip
